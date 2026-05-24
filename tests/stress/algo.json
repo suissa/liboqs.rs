@@ -1,0 +1,74 @@
+{
+  "profile": {
+    "duration_s": 30,
+    "step_s": 2,
+    "scale": "2x",
+    "initial_ops": 1000000
+  },
+  "metrics": [
+    {
+      "t_s": 0,
+      "ops_target": 1000000
+    },
+    {
+      "t_s": 2,
+      "ops_target": 2000000
+    },
+    {
+      "t_s": 4,
+      "ops_target": 4000000
+    },
+    {
+      "t_s": 6,
+      "ops_target": 8000000
+    },
+    {
+      "t_s": 8,
+      "ops_target": 16000000
+    },
+    {
+      "t_s": 10,
+      "ops_target": 32000000
+    },
+    {
+      "t_s": 12,
+      "ops_target": 64000000
+    },
+    {
+      "t_s": 14,
+      "ops_target": 128000000
+    },
+    {
+      "t_s": 16,
+      "ops_target": 256000000
+    },
+    {
+      "t_s": 18,
+      "ops_target": 512000000
+    },
+    {
+      "t_s": 20,
+      "ops_target": 1024000000
+    },
+    {
+      "t_s": 22,
+      "ops_target": 2048000000
+    },
+    {
+      "t_s": 24,
+      "ops_target": 4096000000
+    },
+    {
+      "t_s": 26,
+      "ops_target": 8192000000
+    },
+    {
+      "t_s": 28,
+      "ops_target": 16384000000
+    },
+    {
+      "t_s": 30,
+      "ops_target": 32768000000
+    }
+  ]
+}
