@@ -7,12 +7,12 @@
 #if defined(OQS_ENABLE_SIG_uov_ov_V)
 OQS_SIG *OQS_SIG_uov_ov_V_new(void) {
 
-	OQS_SIG *sig = OQS_MEM_malloc(sizeof(OQS_SIG));
+	OQS_SIG *sig = OQS_MEM_calloc(1, sizeof(OQS_SIG));
 	if (sig == NULL) {
 		return NULL;
 	}
 	sig->method_name = OQS_SIG_alg_uov_ov_V;
-	sig->alg_version = "Round 2";
+	sig->alg_version = "Round 3";
 
 	sig->claimed_nist_level = 5;
 	sig->euf_cma = true;

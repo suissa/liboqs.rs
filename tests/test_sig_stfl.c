@@ -199,7 +199,7 @@ OQS_STATUS sig_stfl_keypair_from_keygen(OQS_SIG_STFL *sig, uint8_t *public_key, 
 	OQS_STATUS rc;
 
 	rc = OQS_SIG_STFL_keypair(sig, public_key, secret_key);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		return OQS_ERROR;
 	}
@@ -410,6 +410,23 @@ static char *convert_method_name_to_file_name(const char *method_name) {
 #define TEST_XMSS_OID_SHA2_10_256 0x01U
 #endif
 
+#ifdef OQS_ENABLE_SIG_STFL_LMS
+/* test_invalid_sig_lms: HSS pk layout (RFC 8554): u32(levels) || u32(lm_type) || u32(lm_ots) || I[16] || T[32]. */
+#define TEST_INVALID_SIG_LMS_PK_LEN 60
+/* Signature header: u32(levels-1) || u32(q) || u32(lm_ots). Real LMS signatures are kilobytes. */
+#define TEST_INVALID_SIG_LMS_HEADER_LEN 12
+/* The bottom level parse needs u32(q) and the n-byte LM-OTS randomizer C, i.e. 8 + n bytes
+ * beyond the four the header consumes: 44 for the SHA-256/n=32 parameter sets liboqs supports.
+ * This is the shortest signature that clears every length bound in the parser. */
+#define TEST_INVALID_SIG_LMS_MIN_BOUNDED_LEN 44
+/* Offsets of the type fields within the pk and the signature header. */
+#define TEST_LMS_LEVELS_OFFSET 3
+#define TEST_LMS_TYPE_OFFSET 7
+#define TEST_LMS_OTS_TYPE_OFFSET 11
+#define TEST_LMS_TYPE_SHA256_H5 5U
+#define TEST_LMOTS_TYPE_SHA256_N32_W2 2U
+#endif
+
 /*
  * This function is used to test the invalid signature verification.
  * @param method_name: The name of the signature algorithm to test.
@@ -461,6 +478,73 @@ static OQS_STATUS test_invalid_sig(const char *method_name) {
 	if (status == OQS_SUCCESS) {
 		return OQS_ERROR;
 	}
+	return OQS_SUCCESS;
+#endif
+}
+
+/*
+ * This function tests verification of LMS signatures that are shorter than the
+ * header the parser reads. The signature buffers are allocated at exactly the
+ * length passed to verify so that a sanitizer build observes any over-read.
+ * @param method_name: The name of the signature algorithm to test.
+ * @return OQS_SUCCESS if every truncated signature is rejected, OQS_ERROR otherwise.
+ */
+static OQS_STATUS test_invalid_sig_lms(const char *method_name) {
+	if (method_name == NULL) {
+		return OQS_ERROR;
+	}
+#ifndef OQS_ENABLE_SIG_STFL_LMS
+	(void)method_name;
+	return OQS_SUCCESS;
+#else
+	OQS_SIG_STFL *sig = OQS_SIG_STFL_new(method_name);
+	if (sig == NULL) {
+		return OQS_ERROR;
+	}
+
+	/* hss_validate_signature_init derives every parameter from the pk and
+	 * signature bytes, so one well-formed single-level pk covers all variants. */
+	uint8_t pk[TEST_INVALID_SIG_LMS_PK_LEN] = {0};
+	pk[TEST_LMS_LEVELS_OFFSET] = 1;
+	pk[TEST_LMS_TYPE_OFFSET] = TEST_LMS_TYPE_SHA256_H5;
+	pk[TEST_LMS_OTS_TYPE_OFFSET] = TEST_LMOTS_TYPE_SHA256_N32_W2;
+
+	uint8_t message[] = "test";
+	/* Every length here must be rejected without reading past the buffer:
+	 *   4, 11          shorter than the 12-byte header, which is_hss_public_key()
+	 *                  reads to offset 8 for the LM-OTS type;
+	 *   12, 39, 40, 43 header present, but fewer than 8 + n bytes remain for q and
+	 *                  the LM-OTS randomizer C that the bottom level copies -- 43
+	 *                  is the largest such length;
+	 *   44             clears both of those bounds, so it reaches
+	 *                  lm_validate_signature() and must be rejected on length
+	 *                  there, still without an over-read. */
+	const size_t trunc_lens[] = {
+		4, 11,
+		TEST_INVALID_SIG_LMS_HEADER_LEN, 39, 40, 43,
+		TEST_INVALID_SIG_LMS_MIN_BOUNDED_LEN
+	};
+
+	for (size_t i = 0; i < sizeof(trunc_lens) / sizeof(trunc_lens[0]); i++) {
+		uint8_t *malicious_sig = OQS_MEM_malloc(trunc_lens[i]);
+		if (malicious_sig == NULL) {
+			OQS_SIG_STFL_free(sig);
+			return OQS_ERROR;
+		}
+		memset(malicious_sig, 0, trunc_lens[i]);
+		if (trunc_lens[i] > TEST_LMS_OTS_TYPE_OFFSET) {
+			malicious_sig[TEST_LMS_OTS_TYPE_OFFSET] = TEST_LMOTS_TYPE_SHA256_N32_W2;
+		}
+
+		OQS_STATUS status = OQS_SIG_STFL_verify(sig, message, sizeof(message) - 1, malicious_sig, trunc_lens[i], pk);
+		OQS_MEM_insecure_free(malicious_sig);
+		if (status == OQS_SUCCESS) {
+			OQS_SIG_STFL_free(sig);
+			return OQS_ERROR;
+		}
+	}
+
+	OQS_SIG_STFL_free(sig);
 	return OQS_SUCCESS;
 #endif
 }
@@ -567,7 +651,7 @@ static OQS_STATUS sig_stfl_test_correctness(const char *method_name, const char 
 	 * Some keypair generation is fast, so we only read keypair from KATs for slow XMSS parameters
 	 */
 	rc = sig_stfl_KATs_keygen(sig, public_key, secret_key, katfile);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: OQS_SIG_STFL_keypair failed\n");
 		goto err;
@@ -588,7 +672,7 @@ static OQS_STATUS sig_stfl_test_correctness(const char *method_name, const char 
 	}
 
 	rc = OQS_SIG_STFL_sign(sig, signature, &signature_len, message, message_len, secret_key);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: OQS_SIG_STFL_sign failed\n");
 		goto err;
@@ -597,7 +681,7 @@ static OQS_STATUS sig_stfl_test_correctness(const char *method_name, const char 
 	OQS_TEST_CT_DECLASSIFY(public_key, sig->length_public_key);
 	OQS_TEST_CT_DECLASSIFY(signature, signature_len);
 	rc = OQS_SIG_STFL_verify(sig, message, message_len, signature, signature_len, public_key);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: OQS_SIG_STFL_verify failed\n");
 		goto err;
@@ -609,13 +693,13 @@ static OQS_STATUS sig_stfl_test_correctness(const char *method_name, const char 
 		goto err;
 	}
 	rc = OQS_SIG_STFL_verify(sig, message, message_len, signature, signature_len, read_pk_buf);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: 2nd Verify with restored public key OQS_SIG_STFL_verify failed\n");
 	}
 
 	rc = test_sig_stfl_bitflip(sig, message, message_len, signature, signature_len, public_key, bitflips_all, bitflips);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		goto err;
 	}
@@ -708,7 +792,7 @@ static OQS_STATUS sig_stfl_test_secret_key(const char *method_name, const char *
 	printf("================================================================================\n");
 
 	rc = sig_stfl_KATs_keygen(sig_obj, public_key, sk, katfile);
-
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key gen failed.\n");
 		goto err;
@@ -718,12 +802,14 @@ static OQS_STATUS sig_stfl_test_secret_key(const char *method_name, const char *
 	 * Get max num signature and the amount remaining
 	 */
 	rc = OQS_SIG_STFL_sigs_total((const OQS_SIG_STFL *)sig_obj, &max_num_sigs, (const OQS_SIG_STFL_SECRET_KEY *)sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get max number of sig from %s.\n", method_name);
 		goto err;
 	}
 
 	rc = OQS_SIG_STFL_sigs_remaining((const OQS_SIG_STFL *)sig_obj, &num_sig_left, (const OQS_SIG_STFL_SECRET_KEY *)sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get the remaining number of sig from %s.\n", method_name);
 		goto err;
@@ -769,7 +855,7 @@ static OQS_STATUS sig_stfl_test_secret_key(const char *method_name, const char *
 
 	context_2 = strdup(file_store_name);
 	rc = OQS_SIG_STFL_SECRET_KEY_deserialize(sk_from_file, from_file_sk_buf, from_file_sk_len, (void *)context_2);
-
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS restore %s from file failed.\n", method_name);
 		goto err;
@@ -836,7 +922,7 @@ static OQS_STATUS sig_stfl_test_query_key(const char *method_name) {
 	printf("================================================================================\n");
 
 	rc = OQS_SIG_STFL_verify(lock_test_sig_obj, message_1, message_len_1, signature_1, signature_len_1, lock_test_public_key);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: lock thread test OQS_SIG_STFL_verify failed\n");
 		goto err;
@@ -847,7 +933,7 @@ static OQS_STATUS sig_stfl_test_query_key(const char *method_name) {
 	printf("================================================================================\n");
 
 	rc = OQS_SIG_STFL_verify(lock_test_sig_obj, message_2, message_len_2, signature_2, signature_len_2, lock_test_public_key);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: lock thread test OQS_SIG_STFL_verify failed\n");
 		goto err;
@@ -892,12 +978,14 @@ static OQS_STATUS sig_stfl_test_sig_gen(const char *method_name) {
 	 */
 	unsigned long long num_sig_left = 0, max_num_sigs = 0;
 	rc = OQS_SIG_STFL_sigs_total((const OQS_SIG_STFL *)lock_test_sig_obj, &max_num_sigs, (const OQS_SIG_STFL_SECRET_KEY *)lock_test_sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get max number of sig from %s.\n", method_name);
 		goto err;
 	}
 
 	rc = OQS_SIG_STFL_sigs_remaining((const OQS_SIG_STFL *)lock_test_sig_obj, &num_sig_left, (const OQS_SIG_STFL_SECRET_KEY *)lock_test_sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get the remaining number of sig from %s.\n", method_name);
 		goto err;
@@ -910,7 +998,7 @@ static OQS_STATUS sig_stfl_test_sig_gen(const char *method_name) {
 	signature_1 = OQS_MEM_malloc(lock_test_sig_obj->length_signature);
 
 	rc = OQS_SIG_STFL_sign(lock_test_sig_obj, signature_1, &signature_len_1, message_1, message_len_1, lock_test_sk);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: lock thread test OQS_SIG_STFL_sign failed\n");
 		goto err;
@@ -921,12 +1009,14 @@ static OQS_STATUS sig_stfl_test_sig_gen(const char *method_name) {
 	 */
 	num_sig_left = 0, max_num_sigs = 0;
 	rc = OQS_SIG_STFL_sigs_total((const OQS_SIG_STFL *)lock_test_sig_obj, &max_num_sigs, (const OQS_SIG_STFL_SECRET_KEY *)lock_test_sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get max number of sig from %s.\n", method_name);
 		goto err;
 	}
 
 	rc = OQS_SIG_STFL_sigs_remaining((const OQS_SIG_STFL *)lock_test_sig_obj, &num_sig_left, (const OQS_SIG_STFL_SECRET_KEY *)lock_test_sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get the remaining number of sig from %s.\n", method_name);
 		goto err;
@@ -939,7 +1029,7 @@ static OQS_STATUS sig_stfl_test_sig_gen(const char *method_name) {
 	signature_2 = OQS_MEM_malloc(lock_test_sig_obj->length_signature);
 
 	rc = OQS_SIG_STFL_sign(lock_test_sig_obj, signature_2, &signature_len_2, message_2, message_len_2, lock_test_sk);
-	OQS_TEST_CT_DECLASSIFY(&rc, sizeof rc);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "ERROR: lock thread test OQS_SIG_STFL_sign failed\n");
 		goto err;
@@ -954,12 +1044,14 @@ static OQS_STATUS sig_stfl_test_sig_gen(const char *method_name) {
 	 */
 	num_sig_left = 0, max_num_sigs = 0;
 	rc = OQS_SIG_STFL_sigs_total((const OQS_SIG_STFL *)lock_test_sig_obj, &max_num_sigs, (const OQS_SIG_STFL_SECRET_KEY *)lock_test_sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get max number of sig from %s.\n", method_name);
 		goto err;
 	}
 
 	rc = OQS_SIG_STFL_sigs_remaining((const OQS_SIG_STFL *)lock_test_sig_obj, &num_sig_left, (const OQS_SIG_STFL_SECRET_KEY *)lock_test_sk);
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key: Failed to get the remaining number of sig from %s.\n", method_name);
 		goto err;
@@ -1019,7 +1111,7 @@ static OQS_STATUS sig_stfl_test_secret_key_lock(const char *method_name, const c
 	printf("================================================================================\n");
 
 	rc = sig_stfl_KATs_keygen(lock_test_sig_obj, lock_test_public_key, lock_test_sk, katfile);
-
+	OQS_TEST_CT_DECLASSIFY(&rc, sizeof(rc));
 	if (rc != OQS_SUCCESS) {
 		fprintf(stderr, "OQS STFL key gen failed.\n");
 		goto err;
@@ -1089,6 +1181,8 @@ void *test_correctness_wrapper(void *arg) {
 	td->rc = sig_stfl_test_correctness(td->alg_name, td->katfile, td->bitflips_all, td->bitflips);
 	if (strstr(td->alg_name, "XMSS") != NULL) {
 		td->rc2 = test_invalid_sig(td->alg_name);
+	} else if (strstr(td->alg_name, "LMS") != NULL) {
+		td->rc2 = test_invalid_sig_lms(td->alg_name);
 	}
 	OQS_thread_stop();
 	return NULL;
@@ -1361,6 +1455,8 @@ err:
 	rc1 = sig_stfl_test_secret_key(alg_name, katfile);
 	if (is_xmss) {
 		rc2 = test_invalid_sig(alg_name);
+	} else if (strstr(alg_name, "LMS") != NULL) {
+		rc2 = test_invalid_sig_lms(alg_name);
 	}
 
 	OQS_destroy();
